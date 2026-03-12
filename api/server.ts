@@ -1,6 +1,6 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import Database from "better-sqlite3";
+import sqlite3 from "sqlite3";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 
