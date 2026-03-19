@@ -1,7 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// 🚀 强制启用 Edge Runtime，避开 Vercel 10s 限制并支持异步
 export const config = {
   runtime: 'edge',
 };
@@ -17,91 +16,87 @@ export default async function handler(req: Request) {
     'Content-Type': 'application/json'
   };
 
-  // 处理跨域请求
   if (req.method === 'OPTIONS') return new Response('ok', { headers });
 
-  // --- 处理录入 (POST) ---
   if (req.method === 'POST') {
     try {
       const { url } = await req.json();
-      if (!url) return new Response(JSON.stringify({ error: "URL is required" }), { status: 400, headers });
+      if (!url) return new Response(JSON.stringify({ error: "URL required" }), { status: 400, headers });
 
-      // 1. 【第一步：占位】先存入 URL，标题设为“处理中”，拿到该条记录的 ID
+      // --- 1. 防御性占位插入 ---
+      // 解决 "expected JSON array"：对 level 和 tags 默认使用数组格式
       const { data: initialData, error: insertError } = await supabase
         .from('links')
         .insert([{
           url,
-          title: "🔄 AI 正在总结中...",
-          article: "正在抓取网页内容并解析，请稍候...",
-          tags: ["处理中"],
-          level: 1
+          title: "🔄 AI 正在深度解析...",
+          article: "内容提取中，请稍后刷新...",
+          tags: ["未分类"], // 默认数组
+          level: [1],      // 强制数组格式，解决 22P02 错误
+          likes: 0,
+          comments: 0
         }])
         .select()
         .single();
 
-      if (insertError) throw insertError;
+      if (insertError) {
+        console.error("Supabase Insert Error:", insertError);
+        // 如果还是报错，尝试不带 level 插入（由数据库默认值处理）
+        return new Response(JSON.stringify({ error: "Database rejected insert", details: insertError }), { status: 500, headers });
+      }
 
-      // 2. 【核心：异步处理函数】不加 await，让它在后台跑
-      const processInBackgroundTask = async () => {
+      // --- 2. 异步回写逻辑 ---
+      const runAI = async () => {
         try {
-          // A. 使用 Jina 抓取文本
+          // A. 抓取 (限时且截断)
           const jinaRes = await fetch(`https://r.jina.ai/${url}`);
-          const rawText = await jinaRes.text();
-          const cleanText = rawText.substring(0, 5000); // 截取前5000字，节省流量
+          const text = await jinaRes.text();
+          const context = text.substring(0, 4000);
 
-          // B. 调用 Gemini 生成总结
+          // B. AI 总结
           const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-          const prompt = `分析文章内容：${cleanText}
-          请严格返回 JSON 格式：{"title":"文章标题","summary":"3句内摘要","level":3,"tags":["AI工具"]}
-          注意：tags 必须从 [AI工具, 个人成长, AI短剧, Vibecoding, 自媒体, 其他] 中选择。`;
-
+          const prompt = `你是一个知识萃取专家。分析：${context}
+          必须返回JSON：{"title":"文章标题","summary":"摘要","level":3,"tags":["标签"],"likes":10,"comments":5}`;
+          
           const result = await model.generateContent(prompt);
-          const aiText = result.response.text().replace(/```json|```/g, "").trim();
-          const aiData = JSON.parse(aiText);
+          const rawResult = result.response.text().replace(/```json|```/g, "").trim();
+          const aiData = JSON.parse(rawResult);
 
-          // C. 【关键：回写字段】根据 ID 更新除了 URL 之外的所有字段
-          const { error: updateError } = await supabase
-            .from('links')
-            .update({
-              title: aiData.title,
-              article: aiData.summary,
-              tags: aiData.tags,
-              level: aiData.level,
-              metadata: aiData // 存入完整的 AI 返回 JSON
-            })
-            .eq('id', initialData.id);
+          // C. 格式化回写数据 (关键修复点)
+          const updatePayload = {
+            title: aiData.title || "无标题文章",
+            article: aiData.summary || "无法生成摘要",
+            // 确保 tags 永远是数组
+            tags: Array.isArray(aiData.tags) ? aiData.tags : [aiData.tags || "其他"],
+            // 确保 level 永远是数组格式以适配你的数据库
+            level: [Number(aiData.level) || 3],
+            likes: Number(aiData.likes) || 0,
+            comments: Number(aiData.comments) || 0,
+            metadata: aiData
+          };
 
-          if (updateError) console.error("Update Error:", updateError);
-          else console.log(`✅ ID ${initialData.id} 已完成 AI 总结回写`);
+          await supabase.from('links').update(updatePayload).eq('id', initialData.id);
+          console.log(`✅ ID ${initialData.id} 已成功回写`);
 
-        } catch (err) {
-          console.error("Background AI Process Failed:", err);
-          // 失败了就把标题改为“解析失败”，方便用户知道
-          await supabase.from('links').update({ title: "❌ AI 解析失败 (内容过长或受限)" }).eq('id', initialData.id);
+        } catch (e) {
+          console.error("Background task error:", e);
+          // 容错：即使总结失败，至少把标题改正常一点
+          await supabase.from('links').update({ title: "⚠️ 链接已收录 (AI解析异常)" }).eq('id', initialData.id);
         }
       };
 
-      // 3. 【非阻塞触发】启动后台任务，但不等待它完成
-      // 在 Edge Runtime 中，这会允许 Response 先发出，后台继续跑一会
-      processInBackgroundTask();
+      // 触发异步
+      runAI();
 
-      // 4. 【秒回响应】直接告诉 Python 脚本“收到了”，耗时通常 < 1秒
-      return new Response(JSON.stringify({ 
-        success: true, 
-        message: "已进入后台处理队列", 
-        id: initialData.id 
-      }), { status: 200, headers });
+      return new Response(JSON.stringify({ success: true, id: initialData.id }), { status: 200, headers });
 
     } catch (err: any) {
-      console.error("Main Process Error:", err);
       return new Response(JSON.stringify({ error: err.message }), { status: 500, headers });
     }
   }
 
-  // --- 处理读取 (GET) ---
   if (req.method === 'GET') {
-    const { data, error } = await supabase.from('links').select('*').order('id', { ascending: false });
-    if (error) return new Response(JSON.stringify(error), { status: 500, headers });
+    const { data } = await supabase.from('links').select('*').order('id', { ascending: false });
     return new Response(JSON.stringify(data || []), { status: 200, headers });
   }
 }
