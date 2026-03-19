@@ -174,7 +174,7 @@ export const DetailPanel: React.FC<DetailPanelProps> = ({ selectedTag, cards, on
                         <section>
                           <h3 className="text-xs font-bold uppercase tracking-widest text-gray-400 mb-3">Summary</h3>
                           <p className="text-gray-700 leading-relaxed text-xl italic font-serif">
-                            "{selectedCard.summary}"
+                            "{selectedCard.summary || selectedCard.article}"
                           </p>
                         </section>
 
