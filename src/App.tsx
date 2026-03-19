@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Plus, Loader2, Sparkles } from 'lucide-react';
-import { motion } from 'motion/react';
 import { TRAYS } from './constants';
 import { CardData } from './types';
 import { Tray } from './components/Tray';
@@ -20,7 +19,7 @@ export default function App() {
 
   const fetchCards = async () => {
     try {
-      const res = await fetch('/api/cards');
+      const res = await fetch('/api/server'); // 统一路径
       const data = await res.json();
       setCards(data);
     } catch (err) {
@@ -36,8 +35,7 @@ export default function App() {
     
     setIsIngesting(true);
     try {
-      // Call the new backend ingest endpoint
-      const res = await fetch('/api/ingest', {
+      const res = await fetch('/api/server', { // 统一路径
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: newUrl }),
@@ -53,18 +51,16 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Ingest failed:', err);
-      alert(`录入失败: ${err.message || '请检查后端服务是否正常。'}`);
+      alert(`录入失败: ${err.message}`);
     } finally {
       setIsIngesting(false);
     }
   };
 
-  // Calculate total cards correctly from state
   const totalCards = cards.length;
 
   return (
     <div className="min-h-screen w-full flex flex-col">
-      {/* Header / Search Bar */}
       <header className="fixed top-0 left-0 w-full z-[80] p-6 flex items-center justify-between pointer-events-none">
         <div className="flex items-center gap-4 pointer-events-auto">
           <div className="w-12 h-12 bg-black rounded-2xl flex items-center justify-center shadow-xl">
@@ -107,7 +103,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main 2.5D Stage */}
       <main className="flex-1 relative isometric-container overflow-hidden">
         {isLoading ? (
           <div className="absolute inset-0 flex items-center justify-center">
@@ -120,10 +115,7 @@ export default function App() {
                 key={tray.tag}
                 config={tray}
                 cards={cards}
-                onCardClick={(card) => {
-                  setSelectedTag(tray.tag);
-                  // We'll handle the card selection inside the DetailPanel
-                }}
+                onCardClick={() => setSelectedTag(tray.tag)}
                 onTrayClick={setSelectedTag}
                 searchQuery={searchQuery}
               />
@@ -132,7 +124,6 @@ export default function App() {
         )}
       </main>
 
-      {/* Footer Stats */}
       <footer className="fixed bottom-0 left-0 w-full p-6 flex justify-between items-end pointer-events-none">
         <div className="bg-white/50 backdrop-blur-md border border-black/5 rounded-xl px-4 py-2 shadow-sm pointer-events-auto">
           <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">System Status</span>
@@ -150,7 +141,6 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Detail Panel */}
       <DetailPanel 
         selectedTag={selectedTag}
         cards={cards}
@@ -159,4 +149,3 @@ export default function App() {
     </div>
   );
 }
- 
