@@ -90,22 +90,18 @@ export default async function (req: any, res: any) {
       if (error) throw error;
       return res.status(200).json(data[0]);
 
-    } catch (err: any) {
+} catch (err: any) {
       console.error(">>> 捕获到错误:", err.message);
       
-      // 关掉闹钟
-      clearTimeout(timeoutId);
-
-      // 容错：如果上面任何一步报错，存入保底数据，但在 article 里直接写明错误
-      const { data } = await supabase.from('links').insert([{ 
-        url, 
-        title: "⚠️ 报错诊断报告", 
-        article: `真凶定位: ${err.message}`, // 错误信息直接写在这里
-        tags: ["DEBUG"], 
-        level: [3] 
-      }]).select();
-      
-      return res.status(200).json(data ? data[0] : { success: true });
+      // 不再尝试写数据库（因为数据库可能也坏了）
+      // 直接把错误通过 Postman 返回
+      return res.status(500).json({
+        success: false,
+        error_type: "CRITICAL_ERROR",
+        message: err.message,
+        stack: err.stack?.split('\n')[1], // 告诉你是哪一行代码崩了
+        hint: "如果看到这个，说明连报错卡片都存不进数据库"
+      });
     }
   }
 
