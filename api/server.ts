@@ -43,13 +43,19 @@ export default async function (req: any, res: any) {
         content = `标题: ${ogTitle}\n摘要: ${ogDesc}`;
       }
 
-      // 3. AI 结构化处理
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const prompt = `基于以下真实抓取的内容，整理出标题、300字摘要和3个标签。必须返回JSON:{"title":"","article":"","tags":[]}\n内容：${content.substring(0, 8000)}`;
+   
+      // 3. AI 结构化处理 - 修正模型名称
+      const model = genAI.getGenerativeModel({ model: "models/gemini-1.5-flash" });
+      const prompt = `分析以下内容，提取标题、约300字摘要和3个标签。必须返回标准的JSON格式:{"title":"","article":"","tags":[]}\n内容：${content.substring(0, 10000)}`;
       
       const result = await model.generateContent(prompt);
-      const aiResponse = result.response.text();
-      const ai = JSON.parse(aiResponse.match(/\{[\s\S]*\}/)![0]);
+      const aiResponse = await result.response.text(); // 建议加上 await
+      
+      // 增加一个防御性解析，防止 AI 返回 Markdown 代码块
+      const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("AI 响应格式异常");
+      const ai = JSON.parse(jsonMatch[0]);
+
 
       // 4. 写入 Supabase
       const { data, error } = await supabase.from('links').insert([{
