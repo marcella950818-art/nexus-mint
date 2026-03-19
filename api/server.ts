@@ -26,7 +26,7 @@ export default async function (req: any, res: any) {
       const content = fcData.data?.markdown || "No content found";
 
       // 2. Gemini (修正模型名称为最稳的 gemini-1.5-flash-latest)
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+      const model = genAI.getGenerativeModel({ model: "gemini-pro" });
       const prompt = `Return JSON: {"title":"","article":"","tags":[]}. Content: ${content.substring(0, 4000)}`;
       
       const result = await model.generateContent(prompt);
