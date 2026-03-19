@@ -36,17 +36,36 @@ export default async function (req: any, res: any) {
       const jsonMatch = aiText.match(/\{[\s\S]*\}/);
       const ai = jsonMatch ? JSON.parse(jsonMatch[0]) : { title: "解析失败", article: aiText };
 
-      // 3. Supabase 写入
+      // 3. Supabase 写入 (这里是入库，必须用 article，绝不动它)
       const { data, error } = await supabase.from('links').insert([{
         url,
         title: ai.title || "Untitled",
-        article: ai.article || "",
+        article: ai.article || "", // 核心：入库字段名保持不变
         tags: ai.tags || [],
         level: [3]
       }]).select();
 
       if (error) throw error;
-      return res.status(200).json(data[0]);
+
+      // --- 下面就是你要求的“全面逻辑”整合 ---
+      
+      const record = data[0]; // 获取刚存进数据库的那一行原始数据
+      
+      // 这里的逻辑就是你刚才提到的：确保 level 是数组，tags 是安全的
+      const safeLevel = Array.isArray(record.level) ? record.level[0] : (record.level || 3);
+      const safeTags = (Array.isArray(record.tags) && record.tags.length > 0) ? record.tags : ["未分类"];
+
+      // 构造最终返回给前端的“全兼容”对象
+      const finalResponse = {
+        ...record,               // A. 保留所有原始字段 (包含 id, url, title, article)
+        level: [safeLevel],      // B. 确保输出格式依然是 Postman 看到的 [3] (兼容 Python)
+        tags: safeTags,          // C. 确保标签不为空
+        summary: record.article, // D. 新增：前端 2.5D 卡片专用字段 (解决摘要空白)
+        displayLevel: safeLevel  // E. 新增：前端进度条专用纯数字
+      };
+
+      // 最终发出，三方满意：数据库收到了内容，Python 拿到了 article，前端拿到了 summary
+      return res.status(200).json(finalResponse);
 
     } catch (err: any) {
       console.error(err);
