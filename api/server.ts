@@ -1,11 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-// 这里的 Key 必须是你刚才找到的以 eyJ 开头的那个！
 const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
 export default async function (req: any, res: any) {
+  // 设置跨域头
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -14,47 +14,61 @@ export default async function (req: any, res: any) {
 
   if (req.method === 'POST') {
     const { url } = req.body;
-    if (!url) return res.status(400).json({ error: "Missing URL" });
-
     try {
-      // 1. 立即入库（确保 Python 和网页录入秒成）
-      const { data: row, error: insErr } = await supabase
-        .from('links')
-        .insert([{
-          url,
-          title: "🔄 AI 正在萃取精华...",
-          article: "抓取中，请稍后刷新查看",
-          tags: ["自动收录"],
-          level: [1] // 适配你数据库的数组格式
-        }])
-        .select().single();
+      // 1. 模拟 iPhone 微信浏览器直接抓取 (避开 Jina，直接请求)
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.42 NetType/WIFI',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
+      });
+      const html = await response.text();
 
-      if (insErr) throw insErr;
+      // 2. 核心：提取微信静态标签 (即便正文被封，这些标签也一定在)
+      const metaTitle = html.match(/property="og:title" content="([\s\S]*?)"/)?.[1] || 
+                        html.match(/<title>([\s\S]*?)<\/title>/)?.[1] || "";
+      const metaDesc = html.match(/property="og:description" content="([\s\S]*?)"/)?.[1] || "";
 
-      // 2. 关键：先给前端/Python返回成功，断开连接
-      res.status(200).json({ success: true, id: row.id });
+      // 3. 让 Gemini 根据元数据脑补出 Article 内容
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const prompt = `你是一个知识萃取专家。
+      我已经抓取到了这个网页的元数据：
+      - 标题: ${metaTitle}
+      - 摘要: ${metaDesc}
+      - URL: ${url}
 
-      // 3. 异步回写（利用 Vercel 剩余的几秒钟干活）
-      try {
-        const jinaRes = await fetch(`https://r.jina.ai/${url}`);
-        const text = await jinaRes.text();
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-        const result = await model.generateContent(`总结 JSON: ${text.substring(0, 1500)}`);
-        const ai = JSON.parse(result.response.text().replace(/```json|```/g, ""));
+      请执行以下任务：
+      1. 如果标题不全，请根据描述补全。
+      2. 将摘要扩充为一段 200 字左右的连贯正文（Article），要求逻辑通顺，像原文章的一部分。
+      3. 提取 3 个相关的短标签。
+      
+      必须只返回 JSON 格式：{"title": "", "article": "", "tags": []}`;
 
-        await supabase.from('links').update({
-          title: ai.title || ai.t,
-          article: ai.summary || ai.s,
-          tags: Array.isArray(ai.tags) ? ai.tags : [ai.tags || "AI"],
-          level: [Number(ai.level) || 3]
-        }).eq('id', row.id);
-      } catch (e) {
-        console.error("AI Backfill failed, but record kept.");
-      }
+      const result = await model.generateContent(prompt);
+      const aiResponse = result.response.text();
+      const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+      const ai = jsonMatch ? JSON.parse(jsonMatch[0]) : { title: metaTitle, article: metaDesc, tags: ["微信"] };
+
+      // 4. 存入数据库
+      const { data, error } = await supabase.from('links').insert([{
+        url,
+        title: ai.title || metaTitle || "解析完成",
+        article: ai.article || metaDesc || "内容已存入，请点击原文查看",
+        tags: Array.isArray(ai.tags) ? ai.tags : ["自动分类"],
+        level: [3]
+      }]).select();
+
+      if (error) throw error;
+      return res.status(200).json(data[0]);
+
     } catch (err: any) {
-      if (!res.writableEnded) res.status(500).json({ error: err.message });
+      console.error("Fetch Error:", err.message);
+      // 最终兜底插入
+      const { data } = await supabase.from('links').insert([{ 
+        url, title: "点击查看原文", article: "外部解析受限", tags: ["待处理"], level: [3] 
+      }]).select();
+      return res.status(200).json(data ? data[0] : { success: true });
     }
-    return;
   }
 
   if (req.method === 'GET') {
