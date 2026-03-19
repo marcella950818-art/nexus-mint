@@ -1,67 +1,60 @@
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { VercelRequest, VercelResponse } from '@vercel/node';
 
+// 这里的 Key 必须是你刚才找到的以 eyJ 开头的那个！
 const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function (req: any, res: any) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   if (req.method === 'POST') {
     const { url } = req.body;
-    console.log("📥 收到请求 URL:", url); // 日志1
+    if (!url) return res.status(400).json({ error: "Missing URL" });
 
     try {
-      // 1. 尝试插入占位符
-      console.log("⏳ 正在尝试写入 Supabase...");
+      // 1. 立即入库（确保 Python 和网页录入秒成）
       const { data: row, error: insErr } = await supabase
         .from('links')
-        .insert([{ 
-          url: url, 
-          title: "AI解析中...", 
-          article: "请刷新", 
-          tags: ["AI"], 
-          level: [1] 
+        .insert([{
+          url,
+          title: "🔄 AI 正在萃取精华...",
+          article: "抓取中，请稍后刷新查看",
+          tags: ["自动收录"],
+          level: [1] // 适配你数据库的数组格式
         }])
-        .select()
-        .single();
+        .select().single();
 
-      if (insErr) {
-        console.error("❌ Supabase 写入报错:", insErr.message, insErr.details); // 关键报错日志
-        return res.status(500).json({ error: "数据库拒绝写入", details: insErr });
+      if (insErr) throw insErr;
+
+      // 2. 关键：先给前端/Python返回成功，断开连接
+      res.status(200).json({ success: true, id: row.id });
+
+      // 3. 异步回写（利用 Vercel 剩余的几秒钟干活）
+      try {
+        const jinaRes = await fetch(`https://r.jina.ai/${url}`);
+        const text = await jinaRes.text();
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(`总结 JSON: ${text.substring(0, 1500)}`);
+        const ai = JSON.parse(result.response.text().replace(/```json|```/g, ""));
+
+        await supabase.from('links').update({
+          title: ai.title || ai.t,
+          article: ai.summary || ai.s,
+          tags: Array.isArray(ai.tags) ? ai.tags : [ai.tags || "AI"],
+          level: [Number(ai.level) || 3]
+        }).eq('id', row.id);
+      } catch (e) {
+        console.error("AI Backfill failed, but record kept.");
       }
-
-      console.log("✅ 数据库占位成功，ID:", row.id);
-
-      // 2. 抓取与解析 (如果这里崩了，至少第一步的数据应该在库里)
-      const jinaUrl = `https://r.jina.ai/${url}`;
-      const jinaRes = await fetch(jinaUrl);
-      const text = await jinaRes.text();
-      console.log("📄 Jina 抓取字数:", text.length);
-
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const result = await model.generateContent(`总结 JSON 格式: ${text.substring(0, 1500)}`);
-      const aiData = JSON.parse(result.response.text().replace(/```json|```/g, ""));
-
-      // 3. 更新
-      await supabase.from('links').update({
-        title: aiData.title || aiData.t,
-        article: aiData.summary || aiData.s,
-        tags: [aiData.tags || "AI"],
-        level: [3]
-      }).eq('id', row.id);
-
-      console.log("🎉 全流程完成！");
-      return res.status(200).json({ success: true });
-
     } catch (err: any) {
-      console.error("💥 运行崩溃:", err.message);
-      return res.status(500).json({ error: err.message });
+      if (!res.writableEnded) res.status(500).json({ error: err.message });
     }
+    return;
   }
 
   if (req.method === 'GET') {
