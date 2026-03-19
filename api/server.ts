@@ -27,23 +27,27 @@ export default async function (req: any, res: any) {
       const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" }, { apiVersion: 'v1' });
       
       const prompt = `
-        You are a content analyzer. Analyze the web content and return JSON.
-        
-        RULES:
-        1. TAGS: Pick exactly ONE from: ["AI工具", "个人成长", "AI短剧", "VIBE CODING", "自媒体", "其他"]
-        2. LEVEL (Difficulty): Rate from 1 to 5:
-           - 1-2: Easy, news, or quick tips.
-           - 3: Standard analysis or practical guides.
-           - 4-5: Deep technical details, research, or complex logic.
-        3. CONTENT: "article" for full text, "summary" for 150-char summary.
+        You are a senior technical auditor. Evaluate the content complexity using the "Depth of Knowledge (DOK)" framework.
 
-        REQUIRED JSON FORMAT (Values in Chinese):
+        ### LEVEL DEFINITION (1-5):
+        - 1 (Recall): Basic facts, news alerts, or landing pages.
+        - 2 (Skill/Concept): Introductory "How-to", listicles, or basic explanations.
+        - 3 (Strategic Thinking): Standard professional articles, case studies, or common dev tasks.
+        - 4 (Extended Thinking): Complex integration, architectural deep-dives (e.g., React migration), or advanced optimization.
+        - 5 (Expert): Groundbreaking research papers, core source code analysis, or highly abstract logic.
+
+        ### OUTPUT RULES:
+        1. TAGS: Pick EXACTLY ONE from ["AI工具", "个人成长", "AI短剧", "VIBE CODING", "自媒体", "其他"].
+        2. SUMMARY: Chinese, max 150 chars.
+        3. LEVEL: Be objective based on the DOK framework.
+
+        REQUIRED JSON FORMAT:
         {
-          "title": "网页标题",
-          "article": "详细正文内容",
-          "summary": "精炼摘要",
-          "tags": ["分类标签"], 
-          "level": 3 
+          "title": "Title in Chinese",
+          "article": "Full text in Chinese",
+          "summary": "Concise summary in Chinese",
+          "tags": ["Selected Tag"], 
+          "level": 4
         }
 
         CONTENT:
@@ -55,24 +59,23 @@ export default async function (req: any, res: any) {
       const aiText = aiResponse.text();
       
       const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-      const ai = jsonMatch ? JSON.parse(jsonMatch[0]) : { 
-        title: "解析失败", 
-        article: content.substring(0, 2000), 
-        summary: "摘要生成失败",
-        tags: ["其他"],
-        level: 3 
-      };
+      const ai = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
 
-      // 关键修复：从 ai 对象里动态获取 level，如果没有则默认为 3
-      const finalLevel = (typeof ai.level === 'number' && ai.level >= 1 && ai.level <= 5) ? ai.level : 3;
+      // 强制数字解析逻辑
+      let finalLevel = 3;
+      if (ai && ai.level) {
+        const num = parseInt(String(ai.level).replace(/\D/g, ''), 10);
+        if (!isNaN(num)) finalLevel = num;
+      }
+      finalLevel = Math.min(Math.max(finalLevel, 1), 5);
 
       const { data, error } = await supabase.from('links').insert([{
         url: url,
-        title: ai.title || "Untitled",
-        article: ai.article || "",
-        summary: ai.summary || "",
-        tags: ai.tags || ["其他"],
-        level: [finalLevel] // 存入 AI 评估的真实分数
+        title: ai?.title || "Untitled",
+        article: ai?.article || content.substring(0, 2000),
+        summary: ai?.summary || "",
+        tags: ai?.tags || ["其他"],
+        level: [finalLevel]
       }]).select();
 
       if (error) throw error;
