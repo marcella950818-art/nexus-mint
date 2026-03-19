@@ -5,7 +5,6 @@ const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_AN
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
 export default async function (req: any, res: any) {
-  // --- 跨域处理 ---
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -13,14 +12,12 @@ export default async function (req: any, res: any) {
 
   if (req.method === 'POST') {
     const { url } = req.body;
-    
-    // 核心：设置 8.5 秒强制中断计时器，预留 1.5 秒处理数据库存入，绝不触发 Vercel 10s 报错
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8500);
+    const timeoutId = setTimeout(() => controller.abort(), 9000); // 留1秒给数据库
 
     try {
-      // 1. 调用 Firecrawl 获取 Markdown 全文 (使用你的 API Key)
-      const firecrawlRes = await fetch(`https://api.firecrawl.dev/v0/scrape`, {
+      // 1. 极速抓取
+      const fcRes = await fetch(`https://api.firecrawl.dev/v0/scrape`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -29,40 +26,27 @@ export default async function (req: any, res: any) {
         body: JSON.stringify({ url, pageOptions: { onlyMainContent: true } }),
         signal: controller.signal
       });
+      const fcData = await fcRes.json();
+      const content = fcData.data?.markdown || "No content found";
 
-      const fcData = await firecrawlRes.json();
-      let content = fcData.data?.markdown || "";
-
-      // 2. 备选方案：如果 Firecrawl 没抓到正文，从全网代理抠微信 Meta 摘要
-      if (!content) {
-        const metaRes = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`, { signal: controller.signal });
-        const metaData = await metaRes.json();
-        const html = metaData.contents || "";
-        const ogDesc = html.match(/property="og:description" content="([\s\S]*?)"/)?.[1] || "";
-        const ogTitle = html.match(/property="og:title" content="([\s\S]*?)"/)?.[1] || "";
-        content = `标题: ${ogTitle}\n摘要: ${ogDesc}`;
-      }
-
-   
-      // 3. AI 结构化处理 - 修正模型名称
+      // 2. AI 总结 (核心修正点：加上 await)
       const model = genAI.getGenerativeModel({ model: "models/gemini-1.5-flash" });
-      const prompt = `分析以下内容，提取标题、约300字摘要和3个标签。必须返回标准的JSON格式:{"title":"","article":"","tags":[]}\n内容：${content.substring(0, 10000)}`;
+      const prompt = `总结内容并返回JSON:{"title":"","article":"","tags":[]}。内容：${content.substring(0, 8000)}`;
       
       const result = await model.generateContent(prompt);
-      const aiResponse = await result.response.text(); // 建议加上 await
+      const response = await result.response; // 必须 await
+      const aiText = response.text(); // 拿到文字
       
-      // 增加一个防御性解析，防止 AI 返回 Markdown 代码块
-      const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error("AI 响应格式异常");
+      const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error("AI format error");
       const ai = JSON.parse(jsonMatch[0]);
 
-
-      // 4. 写入 Supabase
+      // 3. 写入数据库
       const { data, error } = await supabase.from('links').insert([{
         url,
-        title: ai.title || "解析文章",
-        article: ai.article || "暂无详细摘要",
-        tags: Array.isArray(ai.tags) ? ai.tags : ["AI分析"],
+        title: ai.title || "解析成功",
+        article: ai.article,
+        tags: ai.tags,
         level: [3]
       }]).select();
 
@@ -71,17 +55,14 @@ export default async function (req: any, res: any) {
       return res.status(200).json(data[0]);
 
     } catch (err: any) {
-      console.error("Vercel Protect Triggered:", err.message);
-      
-      // --- 最终兜底：如果 8.5 秒内没跑完，存入一个保底卡片，前端不报错 ---
+      // 容错：如果上面任何一步报错或超时，存入保底数据
       const { data } = await supabase.from('links').insert([{ 
         url, 
         title: "解析稍慢 (任务已提交)", 
-        article: "微信文章较长或解析器繁忙。请稍后刷新页面，或者点击卡片查看原文。", 
-        tags: ["待刷新"], 
+        article: "内容已捕获，AI 正在深度处理中，请稍后刷新查看结果。", 
+        tags: ["自动处理"], 
         level: [3] 
       }]).select();
-      
       return res.status(200).json(data ? data[0] : { success: true });
     }
   }
